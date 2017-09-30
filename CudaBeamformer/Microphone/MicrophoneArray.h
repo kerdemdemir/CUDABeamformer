@@ -8,8 +8,8 @@ public:
 	MicrophoneArray();
 	~MicrophoneArray();
 
-	void InsertSound( const std::vector<double>& rawData, double focusDist, double steerAngle ); 
-	void Beamform(std::vector<double>& outputData, double focusDist, double steerAngle);
+	void InsertSound( const std::vector<float>& rawData, float focusDist, float steerAngle ); 
+	void Beamform(std::vector<float>& outputData, float focusDist, float steerAngle);
 
 	std::vector<Microphone> micropshoneList;
 };

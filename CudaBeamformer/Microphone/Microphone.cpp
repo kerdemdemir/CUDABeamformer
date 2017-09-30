@@ -1,7 +1,7 @@
 #include "Microphone.h"
 
 
-Microphone::Microphone( double distCenter )
+Microphone::Microphone( float distCenter )
 {
 	m_distCenter = distCenter;
 	m_data.resize(Config::getInstance().packetSize, 0);

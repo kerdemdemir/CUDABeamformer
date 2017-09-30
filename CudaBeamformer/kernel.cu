@@ -25,12 +25,12 @@
 #ifdef WIN32
 
 #include <windows.h>
-double get_time()
+float get_time()
 {
 	LARGE_INTEGER t, f;
 	QueryPerformanceCounter(&t);
 	QueryPerformanceFrequency(&f);
-	return (double)t.QuadPart / (double)f.QuadPart;
+	return (float)t.QuadPart / (float)f.QuadPart;
 }
 
 #else
@@ -38,7 +38,7 @@ double get_time()
 #include <sys/time.h>
 #include <sys/resource.h>
 
-double get_time()
+float get_time()
 {
 	struct timeval t;
 	struct timezone tzp;
@@ -50,10 +50,11 @@ double get_time()
 
 struct MicParamsGpu
 {
-	double *outputData;
-	double **rawData;
+	float *outputData;
+	float *rawData;
 	int    packetSize;
-	double **leapData;
+	float *leapData;
+	int    leapStride;
 	int    *delays;
 	int    arraySize;
 	int    stride;
@@ -61,15 +62,15 @@ struct MicParamsGpu
 
 cudaError_t beamformWithCudaHelper(MicrophoneArray& array, SharpVector& outputData);
 
-__device__ double GetElement(MicParamsGpu params, int curMic, int index ) {	
+__device__ float GetElement(MicParamsGpu params, int curMic, int index ) {	
 	if (params.packetSize > index)
 	{
-		return params.rawData[curMic][index];
+		return params.rawData[curMic*params.packetSize + index];
 	}
 	else
 	{
-		int leapIndex = index - params.packetSize;
-		return params.leapData[curMic][leapIndex];
+		int leapIndex = (index - params.packetSize) + curMic*params.leapStride;
+		return params.leapData[leapIndex];
 	}
 }
 
@@ -83,24 +84,21 @@ __global__ void beamformKernel2(MicParamsGpu params)
 		float curVal = 0;
 		for (int i = 0; i < params.arraySize; i++)
 		{
-			curVal += params.delays[i];// GetElement(params, i, currentStartIndex + params.delays[i]);
+			curVal = GetElement(params, i, currentStartIndex + k + params.delays[i]);
 		}
 		params.outputData[currentStartIndex + k] = curVal;
 	}
 }
 
-int createPulse(SharpVector& data, size_t readSize, double sampleRate)
+int createPulse(SharpVector& data, size_t readSize, float sampleRate)
 {
-	double f0 = 1500;
-	double ts = 1.0 / sampleRate;
-	double vz = 3000;
+	float f0 = 1500;
+	float ts = 1.0 / sampleRate;
+	//float vz = 3000;
 	for (size_t i = 0; i < readSize; i++)
 	{
-		double realTime = i  * ts;
-		double realPart = cos(2.0*GLOBAL_PI*realTime*f0) *
-			exp(-1.0 * ((i - readSize / 2) * (i - readSize / 2)) / (vz * vz));
-
-
+		float realTime = i  * ts;
+		float realPart = cos(2.0*GLOBAL_PI*realTime*f0);
 		data.push_back(realPart);
 
 	}
@@ -111,25 +109,25 @@ int main()
 {
 	Config& ins = Config::getInstance();
 
-	ins.samplePerSecond = 44100;
+	ins.samplePerSecond = 44000;
 	ins.arraySize = 32;
 	ins.distBetweenMics = 10;
-	ins.packetSize = 44100;
+	ins.packetSize = 44000;
 
 	MicrophoneArray array;
 	SharpVector rawData;
-	createPulse(rawData, 88200, 44100);
+	createPulse(rawData, 44000, 44000);
 	array.InsertSound(rawData, 1000, 45);
 
-	double startTime = get_time();
+	float startTime = get_time();
 
 	SharpVector outputData(Config::getInstance().packetSize);
-	//array.Beamform(rawData, 1000, 45);
+	array.Beamform(outputData, 1000, 45); // CPU toplama 
 
 	
 	
-	beamformWithCudaHelper(array, outputData);
-	double endTime = get_time();
+	//beamformWithCudaHelper(array, outputData); // GPU toplama 
+	float endTime = get_time();
 	std::cout << "CPU Time spent: " << endTime - startTime;
 	
 }
@@ -138,30 +136,35 @@ int main()
 // Helper function for using CUDA to add vectors in parallel.
 cudaError_t beamformWithCudaHelper(MicrophoneArray& array, SharpVector& outputData)
 {	
+	cudaError_t cudaStatus;
 	MicParamsGpu params;
-
-	cudaMalloc(&params.rawData, array.micropshoneList.size());
-	cudaMalloc(&params.leapData, array.micropshoneList.size());
-	cudaMalloc(&params.delays, array.micropshoneList.size());
-
-	params.packetSize = Config::getInstance().packetSize;
-	cudaMalloc(&params.outputData, Config::getInstance().packetSize);
 	params.arraySize = array.micropshoneList.size();
+	params.packetSize = Config::getInstance().packetSize;
+	params.leapStride = Config::getInstance().getMicMaxDelay()*2;
+	cudaMalloc(&params.rawData, array.micropshoneList.size() * sizeof(float) * params.packetSize);
+	cudaMalloc(&params.leapData, array.micropshoneList.size() * sizeof(float) * params.leapStride);
+	cudaMalloc(&params.delays, array.micropshoneList.size() * sizeof(int));
+
+	
+	cudaMalloc(&params.outputData, Config::getInstance().packetSize * sizeof(float) );
+	std::vector<int> delayVec;
 	params.stride = params.packetSize / 1000;
-	for (int i = 0; i < array.micropshoneList.size(); i++ )
+	cudaStatus = cudaGetLastError();
+	for (int i = 0; i < params.arraySize; i++)
 	{
-		thrust::device_vector<double>* inputData = new  thrust::device_vector<double>(array.micropshoneList[i].getData());
-		thrust::device_vector<double>* leapData = new  thrust::device_vector<double>(array.micropshoneList[i].getLeapData());
-		double *inputRaw = thrust::raw_pointer_cast(inputData->data());
-		double *leapRaw = thrust::raw_pointer_cast(leapData->data());
-		params.rawData[i]  = inputRaw;
-		params.leapData[i] = leapRaw;
-		params.delays[i] = array.micropshoneList[i].getDelay(1000, 45) + Config::getInstance().getMicMaxDelay();
+		cudaMemcpy( params.rawData + i * params.packetSize, array.micropshoneList[i].getData().data(),
+						params.packetSize* sizeof(float), cudaMemcpyHostToDevice);
+		cudaStatus = cudaGetLastError();
+		cudaMemcpy(params.leapData + i * params.leapStride, array.micropshoneList[i].getLeapData().data(),
+						params.leapStride* sizeof(float), cudaMemcpyHostToDevice);
+		cudaStatus = cudaGetLastError();
+		delayVec.push_back(array.micropshoneList[i].getDelay(1000, 45) + Config::getInstance().getMicMaxDelay());
 
 	}
+	cudaStatus = cudaGetLastError();
+	cudaMemcpy(params.delays, delayVec.data(), delayVec.size() * sizeof(int), cudaMemcpyHostToDevice);
 
-	cudaError_t cudaStatus;
-
+	float startTime = get_time();
 	// Launch a kernel on the GPU with one thread for each element.
 	beamformKernel2 << <1, 1000 >> >(params);
 
@@ -175,7 +178,8 @@ cudaError_t beamformWithCudaHelper(MicrophoneArray& array, SharpVector& outputDa
 	// any errors encountered during the launch.
 
 
-	cudaMemcpy(outputData.data(), params.outputData, outputData.size(), cudaMemcpyDeviceToHost);
-
-	return cudaStatus;
+	cudaMemcpy(outputData.data(), params.outputData, Config::getInstance().packetSize * sizeof(float), cudaMemcpyDeviceToHost);
+	float endTime = get_time();
+	std::cout << "CPU Time spent: " << endTime - startTime;
+ 	return cudaStatus;
 }

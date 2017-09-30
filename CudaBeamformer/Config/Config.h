@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <memory>
 
-using SharpVector = std::vector<double>;
+using SharpVector = std::vector<float>;
 
 #define GLOBAL_PI 3.14159265
 #define GLOBAL_SOUND_SPEED 34300
@@ -23,8 +23,8 @@ public:
 
 	int getMicMaxDelay() const
 	{
-		double totalMicLen = (Config::getInstance().arraySize * Config::getInstance().distBetweenMics - 1) / 2.0;
-		return totalMicLen / GLOBAL_SOUND_SPEED * (double)Config::getInstance().samplePerSecond;
+		float totalMicLen = (Config::getInstance().arraySize * Config::getInstance().distBetweenMics - 1) / 2.0;
+		return totalMicLen / GLOBAL_SOUND_SPEED * (float)Config::getInstance().samplePerSecond;
 	}
 
 	size_t samplePerSecond;
